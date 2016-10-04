@@ -1,0 +1,11 @@
+#!/bin/bash
+
+./configure \
+	--enable-debug \
+	--enable-trace-backend=stderr \
+	--enable-kvm \
+	--static \
+	--prefix=/usr/ \
+        --target-list=x86_64-softmmu
+#	--prefix=/home/krha/cloudlet/src/qemu-kvm/ 
+

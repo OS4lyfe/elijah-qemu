@@ -2150,6 +2150,92 @@ Notes:
     o Commands that prompt the user for data (eg. 'cont' when the block
       device is encrypted) don't currently work
 
+EQMP
+
+    {
+        .name       = "stop-raw-live",
+        .args_type  = "",
+        .mhandler.cmd_new = qmp_marshal_stop_raw_live,
+    },
+
+SQMP
+stop-raw-live
+----
+
+Stop ongoing raw live migration.
+
+Arguments: None.
+
+Example:
+
+-> { "execute": "stop-raw-live" }
+<- { "return": {} }
+
+EQMP
+
+    {
+        .name       = "iterate-raw-live",
+        .args_type  = "",
+        .mhandler.cmd_new = qmp_marshal_iterate_raw_live,
+    },
+
+SQMP
+iterate-raw-live
+----
+
+Perform iteration in ongoing raw live migration.
+
+Arguments: None.
+
+Example:
+
+-> { "execute": "iterate-raw-live" }
+<- { "return": {} }
+
+EQMP
+
+    {
+        .name       = "randomize-raw-live",
+        .args_type  = "",
+        .mhandler.cmd_new = qmp_marshal_randomize_raw_live,
+    },
+
+SQMP
+randomize-raw-live
+----
+
+Randomize memory output order in raw live migration.
+
+Arguments: None.
+
+Example:
+
+-> { "execute": "randomize-raw-live" }
+<- { "return": {} }
+
+EQMP
+
+    {
+        .name       = "unrandomize-raw-live",
+        .args_type  = "",
+        .mhandler.cmd_new = qmp_marshal_unrandomize_raw_live,
+    },
+
+SQMP
+unrandomize-raw-live
+----
+
+Unrandomize memory output order in raw live migration.
+
+Arguments: None.
+
+Example:
+
+-> { "execute": "unrandomize-raw-live" }
+<- { "return": {} }
+
+
+
 3. Query Commands
 =================
 

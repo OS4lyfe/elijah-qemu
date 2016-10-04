@@ -28,6 +28,7 @@
 #include "block/block_int.h"
 #include "block/throttle-groups.h"
 #include "qemu/error-report.h"
+#include "cloudlet/qemu-cloudlet.h"
 
 #define NOT_DONE 0x7fffffff /* used while emulated sync operation in progress */
 
@@ -608,7 +609,7 @@ static int bdrv_rw_co(BlockDriverState *bs, int64_t sector_num, uint8_t *buf,
 /* return < 0 if error. See bdrv_write() for the return codes */
 int bdrv_read(BlockDriverState *bs, int64_t sector_num,
               uint8_t *buf, int nb_sectors)
-{
+{   
     return bdrv_rw_co(bs, sector_num, buf, nb_sectors, false, 0);
 }
 
@@ -2440,6 +2441,8 @@ static void coroutine_fn bdrv_discard_co_entry(void *opaque)
 int coroutine_fn bdrv_co_discard(BlockDriverState *bs, int64_t sector_num,
                                  int nb_sectors)
 {
+    printlog(true, "bdrv_discard, sector_num:%ld, sector_size:%d\n",\
+            sector_num, nb_sectors);
     BdrvTrackedRequest req;
     int max_discard, ret;
 

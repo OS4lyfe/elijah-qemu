@@ -50,6 +50,8 @@
 #include "qemu/iov.h"
 #include "block/snapshot.h"
 #include "block/qapi.h"
+#include "cloudlet/qemu-cloudlet.h"
+#include "migration/qemu-file-internal.h"
 
 
 #ifndef ETH_P_RARP
@@ -2187,3 +2189,24 @@ void vmstate_register_ram_global(MemoryRegion *mr)
 {
     vmstate_register_ram(mr, NULL);
 }
+
+void set_use_raw(QEMUFile *f, raw_type type)
+{
+    f->use_raw = type;
+}
+
+bool use_raw_none(QEMUFile *file)
+{
+    return (file->use_raw == RAW_NONE);
+}
+
+bool use_raw_suspend(QEMUFile *file)
+{
+    return (file->use_raw == RAW_SUSPEND);
+}
+
+bool use_raw_live(QEMUFile *file)
+{
+    return (file->use_raw == RAW_LIVE);
+}
+

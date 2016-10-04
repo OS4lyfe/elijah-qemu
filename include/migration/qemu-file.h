@@ -132,6 +132,8 @@ int qemu_get_fd(QEMUFile *f);
 int qemu_fclose(QEMUFile *f);
 int64_t qemu_ftell(QEMUFile *f);
 int64_t qemu_ftell_fast(QEMUFile *f);
+int64_t qemu_ftell_read(QEMUFile *f);
+int64_t qemu_fseek(QEMUFile *f, int64_t pos, int whence);
 void qemu_put_buffer(QEMUFile *f, const uint8_t *buf, size_t size);
 void qemu_put_byte(QEMUFile *f, int v);
 /*

@@ -39,6 +39,8 @@
 #include "trace.h"
 #include "exec/ram_addr.h"
 #include "qemu/rcu_queue.h"
+#include "cloudlet/qemu-cloudlet.h"
+#include "migration/qemu-file-internal.h"
 
 #ifdef DEBUG_MIGRATION_RAM
 #define DPRINTF(fmt, ...) \
@@ -64,6 +66,7 @@ static uint64_t bitmap_sync_count;
 #define RAM_SAVE_FLAG_XBZRLE   0x40
 /* 0x80 is reserved in migration.h start with 0x100 next */
 #define RAM_SAVE_FLAG_COMPRESS_PAGE    0x100
+#define RAM_SAVE_FLAG_RAW 0x200
 
 static const uint8_t ZERO_TARGET_PAGE[TARGET_PAGE_SIZE];
 
@@ -762,6 +765,22 @@ static int ram_save_page(QEMUFile *f, RAMBlock* block, ram_addr_t offset,
                 acct_info.dup_pages++;
             }
         }
+    } else if (use_raw_suspend(f)) {
+        size_t len, padding;
+        if (!(offset & RAM_SAVE_FLAG_CONTINUE)) {
+            qemu_put_be64(f, offset | RAM_SAVE_FLAG_RAW);
+            len = strlen(block->idstr);
+            qemu_put_byte(f, len);
+            qemu_put_buffer(f, (uint8_t *)block->idstr, len);
+            padding = qemu_ftell_read(f) & (TARGET_PAGE_SIZE - 1);
+            padding = TARGET_PAGE_SIZE - padding;
+            while (padding-- > 0)
+                qemu_put_byte(f, 0);
+        } 
+        qemu_put_buffer(f, p, TARGET_PAGE_SIZE);
+        *bytes_transferred += TARGET_PAGE_SIZE;
+        acct_info.norm_pages++;
+        pages = 1;
     } else {
         pages = save_zero_page(f, block, offset, p, bytes_transferred);
         if (pages > 0) {
@@ -1994,7 +2013,9 @@ static int ram_save_iterate(QEMUFile *f, void *opaque)
            qemu_get_clock_ns() is a bit expensive, so we only check each some
            iterations
         */
-        if ((i & 63) == 0) {
+        if (use_raw_suspend(f)) {
+            // do not break for the next iteration
+        } else if ((i & 63) == 0) {
             uint64_t t1 = (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0) / 1000000;
             if (t1 > MAX_WAIT) {
                 DPRINTF("big wait: %" PRIu64 " milliseconds, %d iterations\n",
@@ -2128,10 +2149,10 @@ static int load_xbzrle(QEMUFile *f, ram_addr_t addr, void *host)
  */
 static inline void *host_from_stream_offset(QEMUFile *f,
                                             ram_addr_t offset,
-                                            int flags)
+                                            int flags,
+                                            char *id)
 {
     static RAMBlock *block = NULL;
-    char id[256];
     uint8_t len;
 
     if (flags & RAM_SAVE_FLAG_CONTINUE) {
@@ -2277,6 +2298,7 @@ int ram_postcopy_incoming_init(MigrationIncomingState *mis)
  */
 static int ram_load_postcopy(QEMUFile *f)
 {
+    char id[256];
     int flags = 0, ret = 0;
     bool place_needed = false;
     bool matching_page_sizes = qemu_host_page_size == TARGET_PAGE_SIZE;
@@ -2300,7 +2322,7 @@ static int ram_load_postcopy(QEMUFile *f)
         trace_ram_load_postcopy_loop((uint64_t)addr, flags);
         place_needed = false;
         if (flags & (RAM_SAVE_FLAG_COMPRESS | RAM_SAVE_FLAG_PAGE)) {
-            host = host_from_stream_offset(f, addr, flags);
+            host = host_from_stream_offset(f, addr, flags, (char *)&id);
             if (!host) {
                 error_report("Illegal RAM offset " RAM_ADDR_FMT, addr);
                 ret = -EINVAL;
@@ -2397,6 +2419,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     int flags = 0, ret = 0;
     static uint64_t seq_iter;
     int len = 0;
+    char cur_id[256], padding_buf[TARGET_PAGE_SIZE];
     /*
      * If system is running in postcopy mode, page inserts to host memory must
      * be atomic
@@ -2424,14 +2447,16 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
         ram_addr_t addr, total_ram_bytes;
         void *host = NULL;
         uint8_t ch;
+        size_t padding;
 
         addr = qemu_get_be64(f);
         flags = addr & ~TARGET_PAGE_MASK;
         addr &= TARGET_PAGE_MASK;
 
         if (flags & (RAM_SAVE_FLAG_COMPRESS | RAM_SAVE_FLAG_PAGE |
+                     RAM_SAVE_FLAG_RAW |
                      RAM_SAVE_FLAG_COMPRESS_PAGE | RAM_SAVE_FLAG_XBZRLE)) {
-            host = host_from_stream_offset(f, addr, flags);
+            host = host_from_stream_offset(f, addr, flags, (char *)&cur_id);
             if (!host) {
                 error_report("Illegal RAM offset " RAM_ADDR_FMT, addr);
                 ret = -EINVAL;
@@ -2439,6 +2464,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
             }
         }
 
+        RAMBlock *cur_block;
         switch (flags & ~RAM_SAVE_FLAG_CONTINUE) {
         case RAM_SAVE_FLAG_MEM_SIZE:
             /* Synchronize RAM block list */
@@ -2504,9 +2530,19 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
                 break;
             }
             break;
+
         case RAM_SAVE_FLAG_EOS:
             /* normal exit */
             break;
+
+        case RAM_SAVE_FLAG_RAW:
+            cur_block = qemu_ram_block_by_name(cur_id);
+            padding = qemu_ftell_read(f) & (TARGET_PAGE_SIZE - 1);
+            padding = TARGET_PAGE_SIZE - padding;
+            qemu_get_buffer(f, (unsigned char *)&padding_buf, padding);
+            qemu_get_buffer(f, host, cur_block->used_length);
+            break;
+
         default:
             if (flags & RAM_SAVE_FLAG_HOOK) {
                 ram_control_load_hook(f, RAM_CONTROL_HOOK, NULL);
@@ -2541,4 +2577,107 @@ void ram_mig_init(void)
 {
     qemu_mutex_init(&XBZRLE.lock);
     register_savevm_live(NULL, "ram", 0, 4, &savevm_ram_handlers, NULL);
+}
+
+void raw_live_stop(QEMUFile *f)
+{
+    qemu_mutex_lock(&f->raw_live_state_lock);
+    f->raw_live_stop_requested = true;
+    if (!f->raw_live_iterate_requested) {
+	f->raw_live_iterate_requested = true;
+	qemu_cond_broadcast(&f->raw_live_state_cv);
+    }
+    qemu_mutex_unlock(&f->raw_live_state_lock);
+}
+
+void raw_live_iterate(QEMUFile *f)
+{
+    qemu_mutex_lock(&f->raw_live_state_lock);
+    if (!f->raw_live_iterate_requested) {
+	f->raw_live_iterate_requested = true;
+	qemu_cond_broadcast(&f->raw_live_state_cv);
+    }
+    qemu_mutex_unlock(&f->raw_live_state_lock);
+}
+
+void check_wait_raw_live_iterate(QEMUFile *f)
+{
+    qemu_mutex_lock(&f->raw_live_state_lock);
+    if (f->raw_live_iterate_requested) {
+	f->raw_live_iterate_requested = false;
+    } else {
+	for ( ; ; ) {
+	    qemu_cond_wait(&f->raw_live_state_cv,
+			   &f->raw_live_state_lock);
+
+	    if (f->raw_live_iterate_requested) {
+		f->raw_live_iterate_requested = false;
+		break;
+	    }
+	}
+    }
+    qemu_mutex_unlock(&f->raw_live_state_lock);
+}
+
+bool check_raw_live_stop(QEMUFile *f)
+{
+    bool stopped = false;
+
+    qemu_mutex_lock(&f->raw_live_state_lock);
+    if (f->raw_live_stop_requested) {
+	f->raw_live_stop_requested = false;
+	stopped = true;
+    }
+    qemu_mutex_unlock(&f->raw_live_state_lock);
+
+    return stopped;
+}
+
+/* ignore iterate request, unless stop request has been issued */
+void clear_raw_live_iterate(QEMUFile *f)
+{
+    qemu_mutex_lock(&f->raw_live_state_lock);
+    if (f->raw_live_iterate_requested && !f->raw_live_stop_requested)
+	f->raw_live_iterate_requested = false;
+    qemu_mutex_unlock(&f->raw_live_state_lock);
+}
+
+QemuMutex raw_live_global_lock;
+bool raw_live_random = false;
+
+void init_raw_live(void)
+{
+    qemu_mutex_init(&raw_live_global_lock);
+}
+
+void clean_raw_live(void)
+{
+    qemu_mutex_destroy(&raw_live_global_lock);
+}
+
+void raw_live_randomize(void)
+{
+    qemu_mutex_lock(&raw_live_global_lock);
+    if (!raw_live_random)
+	raw_live_random = true;
+    qemu_mutex_unlock(&raw_live_global_lock);
+}
+
+void raw_live_unrandomize(void)
+{
+    qemu_mutex_lock(&raw_live_global_lock);
+    if (raw_live_random)
+	raw_live_random = false;
+    qemu_mutex_unlock(&raw_live_global_lock);
+}
+
+bool check_raw_live_random(void)
+{
+    bool randomized = false;
+
+    qemu_mutex_lock(&raw_live_global_lock);
+    randomized = raw_live_random;
+    qemu_mutex_unlock(&raw_live_global_lock);
+
+    return randomized;
 }

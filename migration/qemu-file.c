@@ -31,6 +31,7 @@
 #include "migration/qemu-file.h"
 #include "migration/qemu-file-internal.h"
 #include "trace.h"
+#include "cloudlet/qemu-cloudlet.h"
 
 /*
  * Stop a file from being read/written - not all backing files can do this
@@ -76,6 +77,14 @@ QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops)
 
     f->opaque = opaque;
     f->ops = ops;
+    f->use_blob = false;
+    f->blob_pos = 0;
+    f->blob_file_size = 0;
+    f->iter_seq = 0;
+    qemu_mutex_init(&f->raw_live_state_lock);
+    qemu_cond_init(&f->raw_live_state_cv);
+    f->raw_live_stop_requested = false;
+    f->raw_live_iterate_requested = false;
     return f;
 }
 
@@ -264,6 +273,9 @@ int qemu_fclose(QEMUFile *f)
     int ret;
     qemu_fflush(f);
     ret = qemu_file_get_error(f);
+
+    qemu_mutex_destroy(&f->raw_live_state_lock);
+    qemu_cond_destroy(&f->raw_live_state_cv);
 
     if (f->ops->close) {
         int ret2 = f->ops->close(f->opaque);
@@ -532,6 +544,32 @@ int64_t qemu_ftell(QEMUFile *f)
 {
     qemu_fflush(f);
     return f->pos;
+}
+
+int64_t qemu_ftell_read(QEMUFile *f)
+{
+    return f->pos - f->buf_size + f->buf_index;
+}
+
+int64_t qemu_fseek(QEMUFile *f, int64_t pos, int whence)
+{
+    if (whence == SEEK_SET) {
+        /* nothing to do */
+    } else if (whence == SEEK_CUR) {
+        pos += qemu_ftell(f);
+    } else {
+        /* SEEK_END not supported */
+        return -1;
+    }
+    if (f->ops->put_buffer) {
+        qemu_fflush(f);
+        f->pos = pos;
+    } else {
+        f->pos = pos;
+        f->buf_index = 0;
+        f->buf_size = 0;
+    }
+    return pos;
 }
 
 int qemu_file_rate_limit(QEMUFile *f)

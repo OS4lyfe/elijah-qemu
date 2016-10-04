@@ -25,6 +25,7 @@
 #include "hw/block/block.h"
 #include "sysemu/sysemu.h"
 #include "qapi/visitor.h"
+#include "cloudlet/qemu-cloudlet.h"
 
 /* --------------------------------- */
 
@@ -161,6 +162,9 @@ static int ide_dev_initfn(IDEDevice *dev, IDEDriveKind kind)
                dev->conf.discard_granularity != 512) {
         error_report("discard_granularity must be 512 for ide");
         return -1;
+    } else if (dev->conf.discard_granularity == 0 &&
+            kind == IDE_HD){
+        dev->conf.discard_granularity = 512;
     }
 
     blkconf_blocksizes(&dev->conf);

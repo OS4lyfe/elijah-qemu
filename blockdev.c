@@ -4035,3 +4035,20 @@ QemuOptsList qemu_drive_opts = {
         { /* end of list */ }
     },
 };
+
+QemuOptsList qemu_cloudlet_opts = {
+    .name = "cloudlet",
+    .implied_opt_name = "uuid",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_cloudlet_opts.head),
+    .desc = {
+        {
+            .name = "logfile",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "raw",
+            .type = QEMU_OPT_STRING,
+        },
+        { /* end if list */ }
+    },
+};
+

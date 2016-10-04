@@ -6,6 +6,17 @@
 #include "qemu/error-report.h"
 #include "trace.h"
 #include "qjson.h"
+#include "cloudlet/qemu-cloudlet.h"
+
+#define DEBUG_SAVEVM
+
+#ifdef DEBUG_SAVEVM
+#define DPRINTF(fmt, ...) \
+    do { printf("savevm: " fmt, ## __VA_ARGS__); } while (0)
+#else
+#define DPRINTF(fmt, ...) \
+    do { } while (0)
+#endif
 
 static void vmstate_subsection_save(QEMUFile *f, const VMStateDescription *vmsd,
                                     void *opaque, QJSON *vmdesc);
@@ -97,6 +108,10 @@ int vmstate_load_state(QEMUFile *f, const VMStateDescription *vmsd,
             return ret;
         }
     }
+    if (!strcmp(vmsd->name, "mc146818rtc")) {
+        DPRINTF("%s: skipping RTC state\n", __func__);
+    }
+
     while (field->name) {
         trace_vmstate_load_state_field(vmsd->name, field->name);
         if ((field->field_exists &&

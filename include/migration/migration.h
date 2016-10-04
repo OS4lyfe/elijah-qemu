@@ -167,7 +167,16 @@ struct MigrationState
     QSIMPLEQ_HEAD(src_page_requests, MigrationSrcPageRequest) src_page_requests;
     /* The RAMBlock used in the last src_page_request */
     RAMBlock *last_req_rb;
+
+    QemuMutex serial_lock;
+    bool ongoing;  /* protected by serial_lock */
 };
+
+typedef enum {
+    RAW_NONE = 0,
+    RAW_SUSPEND,
+    RAW_LIVE
+} raw_type;
 
 void process_incoming_migration(QEMUFile *f);
 
@@ -190,6 +199,10 @@ void unix_start_outgoing_migration(MigrationState *s, const char *path, Error **
 void fd_start_incoming_migration(const char *path, Error **errp);
 
 void fd_start_outgoing_migration(MigrationState *s, const char *fdname, Error **errp);
+
+void raw_start_incoming_migration(const char *path, raw_type type, Error **errp);
+
+void raw_start_outgoing_migration(MigrationState *s, const char *fdname, raw_type type, Error **errp);
 
 void rdma_start_outgoing_migration(void *opaque, const char *host_port, Error **errp);
 
@@ -321,4 +334,49 @@ int ram_save_queue_pages(MigrationState *ms, const char *rbname,
 PostcopyState postcopy_state_get(void);
 /* Set the state and return the old state */
 PostcopyState postcopy_state_set(PostcopyState new_state);
+
+void set_use_raw(QEMUFile *file, raw_type type);
+bool use_raw_none(QEMUFile *file);
+bool use_raw_suspend(QEMUFile *file);
+bool use_raw_live(QEMUFile *file);
+
+uint64_t raw_dump_device_state(bool suspend, bool print);
+int qemu_savevm_dump_non_live(QEMUFile *f, bool suspend, bool print);
+void qemu_fopen_ops_buffered_wrapper(MigrationState *s);
+uint64_t raw_ram_total_pages(uint64_t total_device_size);
+void raw_live_stop(QEMUFile *f);
+void raw_live_iterate(QEMUFile *f);
+void check_wait_raw_live_iterate(QEMUFile *f);
+bool check_raw_live_stop(QEMUFile *f);
+void clear_raw_live_iterate(QEMUFile *f);
+void raw_live_randomize(void);
+void raw_live_unrandomize(void);
+bool check_raw_live_random(void);
+
+void init_raw_live(void);
+void clean_raw_live(void);
+
+void init_migration_state(void);
+void clean_migration_state(void);
+
+uint64_t get_blob_pos(struct QEMUFile *f);
+void set_blob_pos(QEMUFile *f, uint64_t pos);
+
+void reset_iter_seq(struct QEMUFile *);
+void inc_iter_seq(struct QEMUFile *);
+uint64_t get_iter_seq(struct QEMUFile *f);
+
+#define USE_MIGRATION_DEBUG_FILE
+
+#ifdef USE_MIGRATION_DEBUG_FILE
+extern FILE *debug_file;
+#define MIGRATION_DEBUG_FILE "/tmp/qemu_debug_messages"
+#endif
+
+void debug_print_timestamp(const char *msg);
+void qemu_file_enable_blob(QEMUFile *f);
+bool qemu_file_blob_enabled(QEMUFile *f);
+void munmap_ram_blocks(void);
+
+
 #endif

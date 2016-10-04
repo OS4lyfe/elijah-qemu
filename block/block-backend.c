@@ -17,6 +17,7 @@
 #include "sysemu/blockdev.h"
 #include "sysemu/sysemu.h"
 #include "qapi-event.h"
+#include "cloudlet/qemu-cloudlet.h"
 
 /* Number of coroutines to reserve per attached device model */
 #define COROUTINE_POOL_RESERVATION 64
@@ -1172,6 +1173,7 @@ int blk_truncate(BlockBackend *blk, int64_t offset)
 
 int blk_discard(BlockBackend *blk, int64_t sector_num, int nb_sectors)
 {
+    printlog(true, "blk_discard\n");
     int ret = blk_check_request(blk, sector_num, nb_sectors);
     if (ret < 0) {
         return ret;

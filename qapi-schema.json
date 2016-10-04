@@ -1658,6 +1658,34 @@
   'returns': 'str' }
 
 ##
+# @stop-raw-live:
+#
+# Stop ongoing raw live migration.
+##
+{ 'command': 'stop-raw-live' }
+
+##
+# @iterate-raw-live:
+#
+# Perform an interation in ongoing raw live migration.
+##
+{ 'command': 'iterate-raw-live' }
+
+##
+# @randomize-raw-live:
+#
+# Randomize memory output order in raw live migration.
+##
+{ 'command': 'randomize-raw-live' }
+
+##
+# @unrandomize-raw-live:
+#
+# Unrandomize memory output order in raw live migration.
+##
+{ 'command': 'unrandomize-raw-live' }
+
+##
 # @migrate_cancel
 #
 # Cancel the current executing migration process.

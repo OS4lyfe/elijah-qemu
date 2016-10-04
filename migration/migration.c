@@ -33,6 +33,38 @@
 #include "qom/cpu.h"
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
+#include "cloudlet/qemu-cloudlet.h"
+
+enum {
+    MIG_STATE_ERROR,
+    MIG_STATE_SETUP,
+    MIG_STATE_CANCELLED,
+    MIG_STATE_ACTIVE,
+    MIG_STATE_COMPLETED,
+};
+
+static struct timespec get_curr_time(void)
+{
+    struct timespec t;
+
+    clock_gettime(CLOCK_REALTIME, &t);
+
+    return t;
+}
+
+void debug_print_timestamp(const char *msg)
+{
+#ifdef USE_MIGRATION_DEBUG_FILE
+    struct timespec t;
+
+    if (debug_file) {
+	t = get_curr_time();
+	fprintf(debug_file, "%s %ld.%06ld\n",
+		msg, t.tv_sec, t.tv_nsec / 1000);
+	fflush(debug_file);
+    }
+#endif
+}
 
 #define MAX_THROTTLE  (32 << 20)      /* Migration transfer speed throttling */
 
@@ -47,7 +79,7 @@
  * least 4 times as fast as compression.*/
 #define DEFAULT_MIGRATE_DECOMPRESS_THREAD_COUNT 2
 /*0: means nocompress, 1: best speed, ... 9: best compress ratio */
-#define DEFAULT_MIGRATE_COMPRESS_LEVEL 1
+#define DEFAULT_MIGRATE_COMPRESS_LEVEL 0
 /* Define default autoconverge cpu throttle migration parameters */
 #define DEFAULT_MIGRATE_X_CPU_THROTTLE_INITIAL 20
 #define DEFAULT_MIGRATE_X_CPU_THROTTLE_INCREMENT 10
@@ -298,6 +330,7 @@ void migrate_send_rp_req_pages(MigrationIncomingState *mis, const char *rbname,
 void qemu_start_incoming_migration(const char *uri, Error **errp)
 {
     const char *p;
+    debug_print_timestamp("INCOMING_START");
 
     qapi_event_send_migration(MIGRATION_STATUS_SETUP, &error_abort);
     if (!strcmp(uri, "defer")) {
@@ -314,7 +347,23 @@ void qemu_start_incoming_migration(const char *uri, Error **errp)
     } else if (strstart(uri, "unix:", &p)) {
         unix_start_incoming_migration(p, errp);
     } else if (strstart(uri, "fd:", &p)) {
-        fd_start_incoming_migration(p, errp);
+	switch (cloudlet_raw_mode) {
+	case CLOUDLET_RAW_SUSPEND:
+	    raw_start_incoming_migration(p, RAW_SUSPEND, errp);
+	    break;
+	case CLOUDLET_RAW_LIVE:
+	    raw_start_incoming_migration(p, RAW_LIVE, errp);
+	    break;
+	case CLOUDLET_RAW_OFF:
+            fd_start_incoming_migration(p, errp);
+	    break;
+	default:
+            fd_start_incoming_migration(p, errp);
+	}
+    } else if (strstart(uri, "raw:", &p)) {
+    	raw_start_incoming_migration(p, RAW_SUSPEND, errp);
+    } else if (strstart(uri, "rawlive:", &p)) {
+    	raw_start_incoming_migration(p, RAW_LIVE, errp);
 #endif
     } else {
         error_setg(errp, "unknown migration protocol: %s", uri);
@@ -403,6 +452,7 @@ static void process_incoming_migration_co(void *opaque)
      * it's ready to use.
      */
     migrate_generate_event(MIGRATION_STATUS_COMPLETED);
+    debug_print_timestamp("INCOMING_FINISH");
 }
 
 void process_incoming_migration(QEMUFile *f)
@@ -974,6 +1024,7 @@ void qmp_migrate(const char *uri, bool has_blk, bool blk,
                  bool has_inc, bool inc, bool has_detach, bool detach,
                  Error **errp)
 {
+    debug_print_timestamp("outgoing_start");
     Error *local_err = NULL;
     MigrationState *s = migrate_get_current();
     MigrationParams params;
@@ -1021,7 +1072,23 @@ void qmp_migrate(const char *uri, bool has_blk, bool blk,
     } else if (strstart(uri, "unix:", &p)) {
         unix_start_outgoing_migration(s, p, &local_err);
     } else if (strstart(uri, "fd:", &p)) {
-        fd_start_outgoing_migration(s, p, &local_err);
+	switch (cloudlet_raw_mode) {
+	case CLOUDLET_RAW_OFF:
+	    fd_start_outgoing_migration(s, p, &local_err);
+	    break;
+	case CLOUDLET_RAW_SUSPEND:
+	    raw_start_outgoing_migration(s, p, RAW_SUSPEND, &local_err);
+	    break;
+	case CLOUDLET_RAW_LIVE:
+	    raw_start_outgoing_migration(s, p, RAW_LIVE, &local_err);
+	    break;
+	default:
+	    fd_start_outgoing_migration(s, p, &local_err);
+	}
+    } else if (strstart(uri, "raw:", &p)) {
+        raw_start_outgoing_migration(s, p, RAW_SUSPEND, &local_err);
+    } else if (strstart(uri, "rawlive:", &p)) {
+        raw_start_outgoing_migration(s, p, RAW_LIVE, &local_err);
 #endif
     } else {
         error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "uri",
@@ -1525,6 +1592,7 @@ static void migration_completion(MigrationState *s, int current_active_state,
                                  int64_t *start_time)
 {
     int ret;
+    debug_print_timestamp("outgoing_finish");
 
     if (s->state == MIGRATION_STATUS_ACTIVE) {
         qemu_mutex_lock_iothread();
@@ -1771,3 +1839,38 @@ PostcopyState postcopy_state_set(PostcopyState new_state)
     return atomic_xchg(&incoming_postcopy_state, new_state);
 }
 
+void qmp_stop_raw_live(Error **err)
+{
+    debug_print_timestamp("qmp_stop_raw_live");
+    MigrationState *s;
+
+    s = migrate_get_current();
+    if (s->state != MIG_STATE_ACTIVE)
+        return;
+
+    raw_live_stop(s->file);
+}
+
+void qmp_iterate_raw_live(Error **err)
+{
+    debug_print_timestamp("qmp_iterate_raw_live");
+    MigrationState *s;
+
+    s = migrate_get_current();
+    if (s->state != MIG_STATE_ACTIVE)
+        return;
+
+    raw_live_iterate(s->file);
+}
+
+void qmp_randomize_raw_live(Error **err)
+{
+    debug_print_timestamp("qmp_randomize_raw_live");
+    raw_live_randomize();
+}
+
+void qmp_unrandomize_raw_live(Error **err)
+{
+    debug_print_timestamp("qmp_unrandomize_raw_live");
+    raw_live_unrandomize();
+}

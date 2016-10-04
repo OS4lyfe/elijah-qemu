@@ -27,9 +27,16 @@
 
 #include "qemu-common.h"
 #include "qemu/iov.h"
+#include "migration/migration.h"
 
 #define IO_BUF_SIZE 32768
 #define MAX_IOV_SIZE MIN(IOV_MAX, 64)
+
+#define BLOB_SIZE 4096
+typedef uint64_t blob_off_t;
+#define ITER_SEQ_BITS 16
+#define ITER_SEQ_SHIFT (sizeof(blob_off_t) * 8 - ITER_SEQ_BITS)
+#define BLOB_POS_MASK  ((((blob_off_t)1) << ITER_SEQ_SHIFT) - 1)
 
 struct QEMUFile {
     const QEMUFileOps *ops;
@@ -48,6 +55,17 @@ struct QEMUFile {
     unsigned int iovcnt;
 
     int last_error;
+    raw_type use_raw;
+
+    bool       use_blob;
+    blob_off_t blob_pos;
+    blob_off_t blob_file_size;  /* first 8-byte header has this reported blob file size */
+    uint64_t   iter_seq;
+
+    QemuMutex raw_live_state_lock;
+    QemuCond raw_live_state_cv;
+    bool raw_live_stop_requested;     /* protected by raw_live_state_lock */
+    bool raw_live_iterate_requested;  /* protected by raw_live_state_lock */
 };
 
 #endif

@@ -37,6 +37,7 @@ do { printf("scsi-disk: " fmt , ## __VA_ARGS__); } while (0)
 #include "sysemu/blockdev.h"
 #include "hw/block/block.h"
 #include "sysemu/dma.h"
+#include "cloudlet/qemu-cloudlet.h"
 
 #ifdef __linux
 #include <scsi/sg.h>
@@ -2055,6 +2056,7 @@ static int32_t scsi_disk_emulate_command(SCSIRequest *req, uint8_t *buf)
 
             /* set TPE bit if the format supports discard */
             if (s->qdev.conf.discard_granularity) {
+                printlog(true, "set TPE\n");
                 outbuf[14] = 0x80;
             }
 

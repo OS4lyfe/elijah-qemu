@@ -8,6 +8,7 @@ util-obj-y += qmp-introspect.o qapi-types.o qapi-visit.o qapi-event.o
 # block-obj-y is code used by both qemu system emulation and qemu-img
 
 block-obj-y = async.o thread-pool.o
+block-obj-y += cloudlet/qemu-cloudlet.o
 block-obj-y += nbd.o block.o blockjob.o
 block-obj-y += main-loop.o iohandler.o qemu-timer.o
 block-obj-$(CONFIG_POSIX) += aio-posix.o
@@ -44,6 +45,7 @@ common-obj-$(CONFIG_POSIX) += os-posix.o
 common-obj-$(CONFIG_LINUX) += fsdev/
 
 common-obj-y += migration/
+common-obj-y += cloudlet/qemu-cloudlet.o
 common-obj-y += qemu-char.o #aio.o
 common-obj-y += page_cache.o
 common-obj-y += qjson.o

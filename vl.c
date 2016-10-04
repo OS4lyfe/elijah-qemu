@@ -38,6 +38,10 @@
 #include <libvdeplug.h>
 #endif
 
+#ifdef USE_MIGRATION_DEBUG_FILE
+FILE *debug_file;
+#endif
+
 #ifdef CONFIG_SDL
 #if defined(__APPLE__) || defined(main)
 #include <SDL.h>
@@ -124,6 +128,7 @@ int main(int argc, char **argv)
 #include "crypto/init.h"
 #include "sysemu/replay.h"
 #include "qapi/qmp/qerror.h"
+#include "cloudlet/qemu-cloudlet.h"
 
 #define MAX_VIRTIO_CONSOLES 1
 #define MAX_SCLP_CONSOLES 1
@@ -185,6 +190,22 @@ bool boot_strict;
 uint8_t *boot_splash_filedata;
 size_t boot_splash_filedata_size;
 uint8_t qemu_extra_params_fw[2];
+
+enum cloudlet_raw cloudlet_raw_mode = CLOUDLET_RAW_OFF;
+
+#ifdef USE_MIGRATION_DEBUG_FILE
+FILE *debug_file;
+#endif
+
+#define DEBUG_VL
+#ifdef DEBUG_VL
+#define DPRINTF(fmt, ...) \
+    do { printf("vl: " fmt, ## __VA_ARGS__); } while (0)
+#else
+#define DPRINTF(fmt, ...) \
+    do { } while (0)
+#endif
+
 
 int icount_align_option;
 
@@ -3002,6 +3023,10 @@ int main(int argc, char **argv, char **envp)
     Error *main_loop_err = NULL;
     Error *err = NULL;
 
+#ifdef USE_MIGRATION_DEBUG_FILE
+    debug_file = fopen(MIGRATION_DEBUG_FILE, "w");
+#endif
+
     qemu_init_cpu_loop();
     qemu_mutex_lock_iothread();
 
@@ -3880,6 +3905,43 @@ int main(int argc, char **argv, char **envp)
                 }
                 incoming = optarg;
                 break;
+            case QEMU_OPTION_cloudlet:
+                {
+                    const char *logfile_path = NULL;
+                    const char *raw_mode = NULL;
+
+                    opts = qemu_opts_parse_noisily(&qemu_cloudlet_opts, optarg, 1);
+                    if (!opts) {
+                        exit(1);
+                    }
+
+                    logfile_path = qemu_opt_get(opts, "logfile");
+                    if (logfile_path) {
+                        if(!cloudlet_init(logfile_path)) {
+                            fprintf(stderr, "open %s: %s\n", optarg, strerror(errno));
+                            exit(1);
+                        }
+                        fprintf(stderr, "cloudlet logfile path opened at : %s\n", logfile_path);
+                    } else {
+                        fprintf(stderr, "cloudlet logfile path not given\n");
+                    }
+
+                    raw_mode = qemu_opt_get(opts, "raw");
+                    if (raw_mode) {
+                        if (!strcmp(raw_mode, "off")) {
+                            cloudlet_raw_mode = CLOUDLET_RAW_OFF;
+                        } else if (!strcmp(raw_mode, "suspend")) {
+                            cloudlet_raw_mode = CLOUDLET_RAW_SUSPEND;
+                        } else if (!strcmp(raw_mode, "live")) {
+                            cloudlet_raw_mode = CLOUDLET_RAW_LIVE;
+                        } else {
+                            fprintf(stderr, "raw option usage: -cloudlet raw=off|suspend|live\n");
+                            return 0;
+                        }
+                    }
+
+                    break;
+                }
             case QEMU_OPTION_nodefaults:
                 has_defaults = 0;
                 break;
@@ -4689,6 +4751,9 @@ int main(int argc, char **argv, char **envp)
     res_free();
 #ifdef CONFIG_TPM
     tpm_cleanup();
+#endif
+#ifdef USE_MIGRATION_DEBUG_FILE
+    fclose(debug_file);
 #endif
 
     return 0;
