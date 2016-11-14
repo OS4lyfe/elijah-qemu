@@ -85,8 +85,20 @@ QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops)
     qemu_cond_init(&f->raw_live_state_cv);
     f->raw_live_stop_requested = false;
     f->raw_live_iterate_requested = false;
+    printlog(true, "in qemu_fopen_ops: %p\n", f);
     return f;
 }
+
+void qemu_file_enable_blob(QEMUFile *f)
+{
+    f->use_blob = true;
+}
+
+bool qemu_file_blob_enabled(QEMUFile *f)
+{
+    return f->use_blob;
+}
+
 
 /*
  * Get last error for stream f
@@ -325,6 +337,20 @@ void qemu_put_buffer_async(QEMUFile *f, const uint8_t *buf, size_t size)
     add_to_iovec(f, buf, size);
 }
 
+void qemu_put_migration_size(QEMUFile *f, uint64_t num_size)
+{
+    // no read buffer checking done, and assumes buf->index == 0 etc.
+    // i.e., we are the first and sole writer to this QEMUFile
+    uint64_t *header;
+    header = (uint64_t*)(f->buf + f->buf_index);
+    *header = num_size;
+    if (f->ops->writev_buffer) {
+        add_to_iovec(f, f->buf + f->buf_index, sizeof(uint64_t));
+    }
+    f->buf_index += sizeof(uint64_t);
+    qemu_fflush(f);
+}
+
 void qemu_put_buffer(QEMUFile *f, const uint8_t *buf, size_t size)
 {
     size_t l;
@@ -334,19 +360,48 @@ void qemu_put_buffer(QEMUFile *f, const uint8_t *buf, size_t size)
     }
 
     while (size > 0) {
+	if (f->use_blob && (f->blob_pos % BLOB_SIZE) == 0) {
+	    blob_off_t *header = NULL;
+
+	    if (sizeof(blob_off_t) > IO_BUF_SIZE - f->buf_index)
+		qemu_fflush(f);
+
+	    if (f->blob_pos & ~BLOB_POS_MASK) {
+		fprintf(stderr, "blob offset %" PRIu64 " exceeds limit\n",
+			f->blob_pos);
+		abort();
+	    }
+
+	    header = (blob_off_t*)(f->buf + f->buf_index);
+	    *header = f->blob_pos | (f->iter_seq << ITER_SEQ_SHIFT);
+            if (f->ops->writev_buffer) {
+                add_to_iovec(f, f->buf + f->buf_index, sizeof(blob_off_t));
+            }
+	    f->buf_index += sizeof(blob_off_t);
+
+	    if (f->buf_index >= IO_BUF_SIZE)
+		qemu_fflush(f);
+	}
         l = IO_BUF_SIZE - f->buf_index;
         if (l > size) {
             l = size;
         }
+	if (f->use_blob && l > (BLOB_SIZE - (f->blob_pos % BLOB_SIZE))) {
+	    l = (BLOB_SIZE - (f->blob_pos % BLOB_SIZE));
+        }
+
         memcpy(f->buf + f->buf_index, buf, l);
         f->bytes_xfer += l;
         if (f->ops->writev_buffer) {
             add_to_iovec(f, f->buf + f->buf_index, l);
         }
         f->buf_index += l;
-        if (f->buf_index == IO_BUF_SIZE) {
+	if (f->use_blob)
+	    f->blob_pos += l;
+        if (f->buf_index >= IO_BUF_SIZE) {
             qemu_fflush(f);
         }
+        //printlog(true, "in qemu_put_buffer: %d (+ %d)\n", f->buf_index, l);
         if (qemu_file_get_error(f)) {
             break;
         }
@@ -361,16 +416,76 @@ void qemu_put_byte(QEMUFile *f, int v)
         return;
     }
 
+    if (f->use_blob && (f->blob_pos % BLOB_SIZE) == 0) {
+	blob_off_t *header = NULL;
+	if (sizeof(blob_off_t) > IO_BUF_SIZE - f->buf_index)
+	    qemu_fflush(f);
+	if (f->blob_pos & ~BLOB_POS_MASK) {
+	    fprintf(stderr, "blob offset %" PRIu64 " exceeds limit\n",
+		    f->blob_pos);
+	    abort();
+	}
+
+	header = (blob_off_t*)(f->buf + f->buf_index);
+	*header = f->blob_pos | (f->iter_seq << ITER_SEQ_SHIFT);
+        if (f->ops->writev_buffer) {
+            add_to_iovec(f, f->buf + f->buf_index, sizeof(blob_off_t));
+        }
+	f->buf_index += sizeof(blob_off_t);
+
+        if (f->buf_index >= IO_BUF_SIZE)
+            qemu_fflush(f);
+    }
+
     f->buf[f->buf_index] = v;
     f->bytes_xfer++;
     if (f->ops->writev_buffer) {
         add_to_iovec(f, f->buf + f->buf_index, 1);
     }
     f->buf_index++;
+    if (f->use_blob) {
+	f->blob_pos += sizeof(*f->buf);
+        //printlog(true, "in qemu_put_byte blob_pos after: %d (buf_index: %d) (%p)\n", f->blob_pos, f->buf_index, f);
+    }
     if (f->buf_index == IO_BUF_SIZE) {
         qemu_fflush(f);
     }
 }
+
+/* Needs to be used with BLOB_SIZE-aligned pos */
+void set_blob_pos(QEMUFile *f, uint64_t pos)
+{
+    void *padding = NULL;
+
+    if (!f->use_blob)
+	return;
+
+    if ((f->blob_pos % BLOB_SIZE) != 0) {
+        printlog(true, "set_blob_pos: add_padding: %d\n", f->blob_pos);
+	padding = g_malloc0(BLOB_SIZE - (f->blob_pos % BLOB_SIZE));
+	qemu_put_buffer(f, padding, BLOB_SIZE - (f->blob_pos % BLOB_SIZE));
+	qemu_fflush(f);
+	g_free(padding);
+    }
+
+    f->blob_pos = pos;
+}
+
+uint64_t get_blob_pos(struct QEMUFile *f)
+{
+    return (uint64_t)f->blob_pos;
+}
+
+void reset_iter_seq(struct QEMUFile *f)
+{
+    f->iter_seq = 0;
+}
+
+void inc_iter_seq(struct QEMUFile *f)
+{
+    f->iter_seq++;
+}
+
 
 void qemu_file_skip(QEMUFile *f, int size)
 {
@@ -454,6 +569,9 @@ size_t qemu_get_buffer(QEMUFile *f, uint8_t *buf, size_t size)
         pending -= res;
         done += res;
     }
+    if (f->use_blob) {
+        f->blob_pos += size;
+    }
     return done;
 }
 
@@ -521,6 +639,9 @@ int qemu_get_byte(QEMUFile *f)
 
     result = qemu_peek_byte(f, 0);
     qemu_file_skip(f, 1);
+    if (f->use_blob) {
+        f->blob_pos += 1;
+    }
     return result;
 }
 
@@ -553,10 +674,19 @@ int64_t qemu_ftell_read(QEMUFile *f)
 
 int64_t qemu_fseek(QEMUFile *f, int64_t pos, int whence)
 {
+    blob_off_t blob_pos = pos;
+
     if (whence == SEEK_SET) {
         /* nothing to do */
     } else if (whence == SEEK_CUR) {
-        pos += qemu_ftell(f);
+	if (f->use_blob) {
+	    blob_pos = f->blob_pos + pos;
+        }
+        if (use_raw_live(f)) {
+            pos += qemu_ftell_read(f);
+        } else {
+            pos += qemu_ftell(f);
+        }
     } else {
         /* SEEK_END not supported */
         return -1;
@@ -569,6 +699,9 @@ int64_t qemu_fseek(QEMUFile *f, int64_t pos, int whence)
         f->buf_index = 0;
         f->buf_size = 0;
     }
+    if (f->use_blob)
+	f->blob_pos = blob_pos;
+
     return pos;
 }
 

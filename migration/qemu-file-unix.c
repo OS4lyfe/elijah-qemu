@@ -266,6 +266,10 @@ static const QEMUFileOps unix_write_ops = {
     .close =      unix_close
 };
 
+/*
+ * Moved to migration/qemu-file-stdio.c to use QEMUFileStdio
+ */
+/*
 QEMUFile *qemu_fdopen(int fd, const char *mode)
 {
     QEMUFileSocket *s;
@@ -287,6 +291,7 @@ QEMUFile *qemu_fdopen(int fd, const char *mode)
     }
     return s->file;
 }
+*/
 
 static const QEMUFileOps socket_read_ops = {
     .get_fd          = socket_get_fd,

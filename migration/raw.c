@@ -20,6 +20,7 @@
 #include "migration/qemu-file.h"
 #include "block/block.h"
 #include "cloudlet/qemu-cloudlet.h"
+#include "include/migration/migration.h"
 
 #define DEBUG_MIGRATION_RAW
 
@@ -31,9 +32,10 @@
     do { } while (0)
 #endif
 
+
 void raw_start_outgoing_migration(MigrationState *s, const char *fdname, raw_type type, Error **errp)
 {
-    DPRINTF("raw_migration: start migration at %s\n", fdname);
+    printlog(true, "raw_migration: start migration at %s\n", fdname);
     // for already created file
     int fd = monitor_get_fd(cur_mon, fdname, errp);
     if (fd == -1) {
@@ -45,6 +47,9 @@ void raw_start_outgoing_migration(MigrationState *s, const char *fdname, raw_typ
     }
     s->file = qemu_fdopen(fd, "wb");
     set_use_raw(s->file, type);
+    if (use_raw_live(s->file))
+	qemu_file_enable_blob(s->file);
+
     migrate_fd_connect(s);
 }
 
@@ -52,6 +57,7 @@ static void raw_accept_incoming_migration(void *opaque)
 {
     QEMUFile *f = opaque;
 
+    printlog(true, "raw_accept_incoming_migration\n");
     qemu_set_fd_handler(qemu_get_fd(f), NULL, NULL, NULL);
     process_incoming_migration(f);
 }
@@ -72,7 +78,7 @@ void raw_start_incoming_migration(const char *infd, raw_type type, Error **errp)
 
     f = qemu_fdopen(fd, "rb");
     if(f == NULL) {
-        DPRINTF("Unable to apply qemu wrapper to file descriptor\n");
+        printlog(true, "Unable to apply qemu wrapper to file descriptor\n");
         return;
     }
 
@@ -86,3 +92,41 @@ void raw_start_incoming_migration(const char *infd, raw_type type, Error **errp)
     qemu_set_fd_handler(fd, raw_accept_incoming_migration, NULL, f);
 }
 
+// copied from migration.c
+enum {
+    MIG_STATE_ERROR,
+    MIG_STATE_SETUP,
+    MIG_STATE_CANCELLED,
+    MIG_STATE_ACTIVE,
+    MIG_STATE_COMPLETED,
+};
+
+uint64_t raw_dump_device_state(bool suspend, bool print)
+{
+    MigrationState _s, *s = &_s;
+    char fname[64];
+    uint64_t num_pages = 0;
+
+    strcpy(fname, "/tmp/qemu.XXXXXX");
+    s->fd = mkostemp(fname, O_CREAT | O_WRONLY | O_TRUNC);
+
+    if (s->fd == -1) {
+	DPRINTF("raw_migration: failed to open file\n");
+	goto err_after_get_fd;
+    }
+
+    s->state = MIG_STATE_ACTIVE;
+    s->file = qemu_fdopen(s->fd, "wb");
+
+    num_pages = qemu_savevm_dump_non_live(s->file, suspend, print);
+
+    qemu_fclose(s->file);
+    unlink(fname);
+
+    return num_pages*1.1;
+
+// err_after_open:
+    close(s->fd);
+err_after_get_fd:
+    return 0;  // returns 0 pages on error
+}

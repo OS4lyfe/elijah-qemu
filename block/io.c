@@ -2441,8 +2441,7 @@ static void coroutine_fn bdrv_discard_co_entry(void *opaque)
 int coroutine_fn bdrv_co_discard(BlockDriverState *bs, int64_t sector_num,
                                  int nb_sectors)
 {
-    printlog(true, "bdrv_discard, sector_num:%ld, sector_size:%d\n",\
-            sector_num, nb_sectors);
+    printlog(true, "bdrv_discard, sector_num:%ld, sector_size:%d\n", sector_num, nb_sectors);
     BdrvTrackedRequest req;
     int max_discard, ret;
 

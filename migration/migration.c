@@ -34,6 +34,7 @@
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
 #include "cloudlet/qemu-cloudlet.h"
+#include "migration/qemu-file-internal.h"
 
 enum {
     MIG_STATE_ERROR,
@@ -129,6 +130,20 @@ MigrationState *migrate_get_current(void)
         once = true;
     }
     return &current_migration;
+}
+
+void init_migration_state(void)
+{
+    MigrationState *s = migrate_get_current();
+
+    qemu_mutex_init(&s->serial_lock);
+}
+
+void clean_migration_state(void)
+{
+    MigrationState *s = migrate_get_current();
+
+    qemu_mutex_destroy(&s->serial_lock);
 }
 
 /* For incoming */
@@ -410,6 +425,7 @@ static void process_incoming_migration_co(void *opaque)
     migration_incoming_state_destroy();
 
     if (ret < 0) {
+        printlog(true, "process_incoming_migration_co 9: %s\n", strerror(-ret));
         migrate_generate_event(MIGRATION_STATUS_FAILED);
         error_report("load of migration failed: %s", strerror(-ret));
         migrate_decompress_threads_join();
@@ -424,6 +440,7 @@ static void process_incoming_migration_co(void *opaque)
         migrate_decompress_threads_join();
         exit(EXIT_FAILURE);
     }
+    printlog(true, "process_incoming_migration_co 10\n");
 
     /*
      * This must happen after all error conditions are dealt with and
@@ -1074,15 +1091,19 @@ void qmp_migrate(const char *uri, bool has_blk, bool blk,
     } else if (strstart(uri, "fd:", &p)) {
 	switch (cloudlet_raw_mode) {
 	case CLOUDLET_RAW_OFF:
+            printlog(true, "case CLOUDLET_RAW_OFF\n");
 	    fd_start_outgoing_migration(s, p, &local_err);
 	    break;
 	case CLOUDLET_RAW_SUSPEND:
+            printlog(true, "case CLOUDLET_RAW_SUSPEND\n");
 	    raw_start_outgoing_migration(s, p, RAW_SUSPEND, &local_err);
 	    break;
 	case CLOUDLET_RAW_LIVE:
+            printlog(true, "case CLOUDLET_RAW_LIVE\n");
 	    raw_start_outgoing_migration(s, p, RAW_LIVE, &local_err);
 	    break;
 	default:
+            printlog(true, "case default\n");
 	    fd_start_outgoing_migration(s, p, &local_err);
 	}
     } else if (strstart(uri, "raw:", &p)) {
@@ -1656,6 +1677,8 @@ fail:
 static void *migration_thread(void *opaque)
 {
     MigrationState *s = opaque;
+    QEMUFile *f = s->file;
+    int ret;
     /* Used by the bandwidth calcs, updated later */
     int64_t initial_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
     int64_t setup_start = qemu_clock_get_ms(QEMU_CLOCK_HOST);
@@ -1665,6 +1688,7 @@ static void *migration_thread(void *opaque)
     int64_t end_time;
     bool old_vm_running = false;
     bool entered_postcopy = false;
+    bool is_first_iteration = true;
     /* The active state we expect to be in; ACTIVE or POSTCOPY_ACTIVE */
     enum MigrationStatus current_active_state = MIGRATION_STATUS_ACTIVE;
 
@@ -1687,11 +1711,18 @@ static void *migration_thread(void *opaque)
         qemu_savevm_send_postcopy_advise(s->file);
     }
 
+    printlog(true, "migration_thread in\n");
+    if (use_raw_live(s->file))
+	reset_iter_seq(s->file);
     qemu_savevm_state_begin(s->file, &s->params);
+    /* ignore iterate requests issued before top half finished */
+    if (use_raw_live(s->file))
+	clear_raw_live_iterate(s->file);
 
     s->setup_time = qemu_clock_get_ms(QEMU_CLOCK_HOST) - setup_start;
     current_active_state = MIGRATION_STATUS_ACTIVE;
     migrate_set_state(s, MIGRATION_STATUS_SETUP, MIGRATION_STATUS_ACTIVE);
+    qemu_file_set_rate_limit(s->file, INT64_MAX);
 
     trace_migration_thread_setup_complete();
 
@@ -1699,9 +1730,37 @@ static void *migration_thread(void *opaque)
            s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE) {
         int64_t current_time;
         uint64_t pending_size;
-
-        if (!qemu_file_rate_limit(s->file)) {
+	if (use_raw_live(f)) {
+            if (is_first_iteration) {
+                printlog(true, "first iteration\n");
+                is_first_iteration = false;
+            } else {
+                check_wait_raw_live_iterate(f);
+            }
             uint64_t pend_post, pend_nonpost;
+            qemu_savevm_state_pending(s->file, max_size, &pend_nonpost,
+                                      &pend_post);
+            /* Just another iteration step */
+            ret = qemu_savevm_state_iterate(s->file, entered_postcopy);
+            printlog(true, "qemu_savevm_state_iterate ret(%d): sequence(%d)\n", ret, s->file->iter_seq);
+            inc_iter_seq(s->file);
+            if (ret < 0) {
+                printlog(true, "return minus\n");
+                migrate_fd_error(s);
+            } else if (check_raw_live_stop(f)) {
+                printlog(true, "before migration_completion\n");
+                migration_completion(s, current_active_state,
+                                     &old_vm_running, &start_time);
+                printlog(true, "after migration_completion\n");
+                break;
+            } else {
+                printlog(true, "return >= 0, but no stop signal\n");
+            }
+        }
+
+        if (!use_raw_live(f) && !qemu_file_rate_limit(s->file)) {
+            uint64_t pend_post, pend_nonpost;
+            printlog(true, "migration_thread suspend pending\n");
 
             qemu_savevm_state_pending(s->file, max_size, &pend_nonpost,
                                       &pend_post);
@@ -1724,6 +1783,7 @@ static void *migration_thread(void *opaque)
                     continue;
                 }
                 /* Just another iteration step */
+                printlog(true, "migration_thread iterate\n");
                 qemu_savevm_state_iterate(s->file, entered_postcopy);
             } else {
                 trace_migration_thread_low_pending(pending_size);
@@ -1765,6 +1825,7 @@ static void *migration_thread(void *opaque)
             g_usleep((initial_time + BUFFER_DELAY - current_time)*1000);
         }
     }
+    printlog(true, "migration_thread after_loop\n");
 
     trace_migration_thread_after_loop();
     /* If we enabled cpu throttling for auto-converge, turn it off. */
@@ -1841,36 +1902,37 @@ PostcopyState postcopy_state_set(PostcopyState new_state)
 
 void qmp_stop_raw_live(Error **err)
 {
-    debug_print_timestamp("qmp_stop_raw_live");
+    printlog(true, "qmp_stop_raw_live\n");
     MigrationState *s;
 
     s = migrate_get_current();
-    if (s->state != MIG_STATE_ACTIVE)
-        return;
+    //if (s->state != MIG_STATE_ACTIVE)
+    //    return;
 
     raw_live_stop(s->file);
 }
 
 void qmp_iterate_raw_live(Error **err)
 {
-    debug_print_timestamp("qmp_iterate_raw_live");
     MigrationState *s;
-
     s = migrate_get_current();
-    if (s->state != MIG_STATE_ACTIVE)
-        return;
-
+    //if (s->state != MIG_STATE_ACTIVE)
+    //    printlog(true, "Migration state is not active: %d\n", s->state);
+    //    return;
+    printlog(true, "before raw_live_iterate\n");
     raw_live_iterate(s->file);
+    printlog(true, "after raw_live_iterate\n");
 }
 
 void qmp_randomize_raw_live(Error **err)
 {
-    debug_print_timestamp("qmp_randomize_raw_live");
+    printlog(true, "qmp_randomize_raw_live\n");
     raw_live_randomize();
 }
 
 void qmp_unrandomize_raw_live(Error **err)
 {
-    debug_print_timestamp("qmp_unrandomize_raw_live");
+    printlog(true, "qmp_unrandomize_raw_live before\n");
     raw_live_unrandomize();
+    printlog(true, "qmp_unrandomize_raw_live after\n");
 }

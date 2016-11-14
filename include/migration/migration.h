@@ -136,6 +136,7 @@ struct MigrationState
     int parameters[MIGRATION_PARAMETER_MAX];
 
     int state;
+    int fd;
     MigrationParams params;
 
     /* State related to return path */
@@ -339,6 +340,7 @@ void set_use_raw(QEMUFile *file, raw_type type);
 bool use_raw_none(QEMUFile *file);
 bool use_raw_suspend(QEMUFile *file);
 bool use_raw_live(QEMUFile *file);
+bool use_raw_live_global(void);
 
 uint64_t raw_dump_device_state(bool suspend, bool print);
 int qemu_savevm_dump_non_live(QEMUFile *f, bool suspend, bool print);
@@ -352,6 +354,7 @@ void clear_raw_live_iterate(QEMUFile *f);
 void raw_live_randomize(void);
 void raw_live_unrandomize(void);
 bool check_raw_live_random(void);
+void reset_blob_pos(QEMUFile *f);
 
 void init_raw_live(void);
 void clean_raw_live(void);

@@ -36,6 +36,10 @@ struct RAMBlock {
     /* RCU-enabled, writes protected by the ramlist lock */
     QLIST_ENTRY(RAMBlock) next;
     int fd;
+
+    uint64_t blob_pos;
+    uint32_t *migration_order;
+    bool first_iteration;
 };
 
 static inline void *ramblock_ptr(RAMBlock *block, ram_addr_t offset)

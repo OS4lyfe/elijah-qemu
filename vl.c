@@ -4103,6 +4103,9 @@ int main(int argc, char **argv, char **envp)
 
     loc_set_none();
 
+    init_migration_state();
+    init_raw_live();
+
     os_daemonize();
 
     if (qemu_init_main_loop(&main_loop_err)) {
@@ -4752,9 +4755,14 @@ int main(int argc, char **argv, char **envp)
 #ifdef CONFIG_TPM
     tpm_cleanup();
 #endif
+
+    munmap_ram_blocks();
+    cloudlet_end();
 #ifdef USE_MIGRATION_DEBUG_FILE
     fclose(debug_file);
 #endif
+    clean_migration_state();
+    clean_raw_live();
 
     return 0;
 }

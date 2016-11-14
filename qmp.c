@@ -33,6 +33,7 @@
 #include "qom/object_interfaces.h"
 #include "hw/mem/pc-dimm.h"
 #include "hw/acpi/acpi_dev_interface.h"
+#include "cloudlet/qemu-cloudlet.h"
 
 NameInfo *qmp_query_name(Error **errp)
 {
@@ -105,7 +106,12 @@ void qmp_stop(Error **errp)
     if (runstate_check(RUN_STATE_INMIGRATE)) {
         autostart = 0;
     } else {
-        vm_stop(RUN_STATE_PAUSED);
+        if (cloudlet_raw_mode != CLOUDLET_RAW_LIVE) {
+            vm_stop(RUN_STATE_PAUSED);
+            printlog(true, "qmp_stop request working\n");
+        } else {
+            printlog(true, "qmp_stop request ignored for raw_live mode\n");
+        }
     }
 }
 

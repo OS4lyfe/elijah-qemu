@@ -57,9 +57,11 @@ static ssize_t stdio_get_buffer(void *opaque, uint8_t *buf, int64_t pos,
     QEMUFileStdio *s = opaque;
     FILE *fp = s->stdio_file;
     ssize_t bytes;
+    int ret;
 
     for (;;) {
         clearerr(fp);
+        ret = fseek(fp, (long)pos, SEEK_SET);
         bytes = fread(buf, 1, size, fp);
         if (bytes != 0 || !ferror(fp)) {
             break;
@@ -67,6 +69,8 @@ static ssize_t stdio_get_buffer(void *opaque, uint8_t *buf, int64_t pos,
         if (errno == EAGAIN) {
             yield_until_fd_readable(fileno(fp));
         } else if (errno != EINTR) {
+            break;
+        } else if (ret == 0) {
             break;
         }
     }
@@ -167,6 +171,32 @@ static const QEMUFileOps stdio_file_write_ops = {
     .put_buffer = stdio_put_buffer,
     .close =      stdio_fclose
 };
+
+QEMUFile *qemu_fdopen(int fd, const char *mode)
+{
+    QEMUFileStdio *s;
+
+    if (mode == NULL ||
+        (mode[0] != 'r' && mode[0] != 'w') ||
+        mode[1] != 'b' || mode[2] != 0) {
+        fprintf(stderr, "qemu_fdopen: Argument validity check failed\n");
+        return NULL;
+    }
+
+    s = g_new0(QEMUFileStdio, 1);
+    s->stdio_file = fdopen(fd, mode);
+    if (!s->stdio_file) {
+        return NULL;
+    }
+
+    if (mode[0] == 'r') {
+        s->file = qemu_fopen_ops(s, &stdio_file_read_ops);
+    } else {
+        s->file = qemu_fopen_ops(s, &stdio_file_write_ops);
+    }
+    return s->file;
+}
+
 
 QEMUFile *qemu_fopen(const char *filename, const char *mode)
 {
