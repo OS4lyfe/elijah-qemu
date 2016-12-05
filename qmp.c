@@ -108,9 +108,7 @@ void qmp_stop(Error **errp)
     } else {
         if (cloudlet_raw_mode != CLOUDLET_RAW_LIVE) {
             vm_stop(RUN_STATE_PAUSED);
-            printlog(true, "qmp_stop request working\n");
         } else {
-            printlog(true, "qmp_stop request ignored for raw_live mode\n");
         }
     }
 }

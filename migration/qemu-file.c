@@ -31,7 +31,6 @@
 #include "migration/qemu-file.h"
 #include "migration/qemu-file-internal.h"
 #include "trace.h"
-#include "cloudlet/qemu-cloudlet.h"
 
 /*
  * Stop a file from being read/written - not all backing files can do this
@@ -85,7 +84,6 @@ QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops)
     qemu_cond_init(&f->raw_live_state_cv);
     f->raw_live_stop_requested = false;
     f->raw_live_iterate_requested = false;
-    printlog(true, "in qemu_fopen_ops: %p\n", f);
     return f;
 }
 
@@ -401,7 +399,6 @@ void qemu_put_buffer(QEMUFile *f, const uint8_t *buf, size_t size)
         if (f->buf_index >= IO_BUF_SIZE) {
             qemu_fflush(f);
         }
-        //printlog(true, "in qemu_put_buffer: %d (+ %d)\n", f->buf_index, l);
         if (qemu_file_get_error(f)) {
             break;
         }
@@ -445,7 +442,6 @@ void qemu_put_byte(QEMUFile *f, int v)
     f->buf_index++;
     if (f->use_blob) {
 	f->blob_pos += sizeof(*f->buf);
-        //printlog(true, "in qemu_put_byte blob_pos after: %d (buf_index: %d) (%p)\n", f->blob_pos, f->buf_index, f);
     }
     if (f->buf_index == IO_BUF_SIZE) {
         qemu_fflush(f);
@@ -461,7 +457,6 @@ void set_blob_pos(QEMUFile *f, uint64_t pos)
 	return;
 
     if ((f->blob_pos % BLOB_SIZE) != 0) {
-        printlog(true, "set_blob_pos: add_padding: %d\n", f->blob_pos);
 	padding = g_malloc0(BLOB_SIZE - (f->blob_pos % BLOB_SIZE));
 	qemu_put_buffer(f, padding, BLOB_SIZE - (f->blob_pos % BLOB_SIZE));
 	qemu_fflush(f);
@@ -682,7 +677,7 @@ int64_t qemu_fseek(QEMUFile *f, int64_t pos, int whence)
 	if (f->use_blob) {
 	    blob_pos = f->blob_pos + pos;
         }
-        if (use_raw_live(f)) {
+        if (use_raw_live(f) || use_raw_suspend(f)) {
             pos += qemu_ftell_read(f);
         } else {
             pos += qemu_ftell(f);

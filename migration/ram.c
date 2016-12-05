@@ -772,6 +772,7 @@ static int ram_save_page(QEMUFile *f, RAMBlock* block, ram_addr_t offset,
         size_t len, padding;
         if (!(offset & RAM_SAVE_FLAG_CONTINUE)) {
             if (block->first_iteration) {
+                // write header only at the first iteration
                 block->first_iteration = false;
                 qemu_put_be64(f, offset | RAM_SAVE_FLAG_RAW);
                 len = strlen(block->idstr);
@@ -789,16 +790,11 @@ static int ram_save_page(QEMUFile *f, RAMBlock* block, ram_addr_t offset,
                 if (use_raw_live(f) && (block->blob_pos == 0)) {
                     // update only once for each region
                     block->blob_pos = get_blob_pos(f);
-                    printlog(true, "ram_save_page update_block->blob_pos: %s, %d\n", block->idstr, block->blob_pos);
                 }
-                printlog(true, "ram_save_page new memory block: %s\n", block->idstr);
-            } else {
-                printlog(true, "ram_save_page not first iteration:%s\n", block->idstr);
             }
         }
         if (use_raw_live(f)) {
             set_blob_pos(f, block->blob_pos + original_offset);
-            //printlog(true, "ram_save_page %s, blob_pos %d, block->blob_pos: %d, offset: %d\n", block->idstr, get_blob_pos(f), block->blob_pos, original_offset);
             memory_region_reset_dirty(block->mr, original_offset, TARGET_PAGE_SIZE, DIRTY_MEMORY_MIGRATION);
         }
         qemu_put_buffer(f, p, TARGET_PAGE_SIZE);
@@ -1991,7 +1987,6 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
     qemu_mutex_unlock_ramlist();
     qemu_mutex_unlock_iothread();
 
-    printlog(true, "header_ram_save_setup RAM_SAVE_FLAG_MEM_SIZE\n");
     qemu_put_be64(f, ram_bytes_total() | RAM_SAVE_FLAG_MEM_SIZE);
 
     QLIST_FOREACH_RCU(block, &ram_list.blocks, next) {
@@ -2007,8 +2002,8 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
     ram_control_after_iterate(f, RAM_CONTROL_SETUP);
 
     if (use_raw_live(f) || use_raw_suspend(f)) {
+        // EOS is only written only after finishing all migration
     } else {
-        printlog(true, "header_ram_save_setup RAM_SAVE_FLAG_EOS\n");
         qemu_put_be64(f, RAM_SAVE_FLAG_EOS);
     }
 
@@ -2017,7 +2012,6 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
 
 static int ram_save_iterate(QEMUFile *f, void *opaque)
 {
-    printlog(true, "ram_save_iterate in\n");
     int ret;
     int i;
     int64_t t0;
@@ -2072,9 +2066,9 @@ static int ram_save_iterate(QEMUFile *f, void *opaque)
      */
     ram_control_after_iterate(f, RAM_CONTROL_ROUND);
 
-    if (use_raw_live(f) || use_raw_suspend(f)) { // write EOS at ram_completion
+    if (use_raw_live(f) || use_raw_suspend(f)) {
+        // write EOS at ram_completion
     } else {
-        printlog(true, "header_ram_save_setup RAM_SAVE_FLAG_EOS\n");
         qemu_put_be64(f, RAM_SAVE_FLAG_EOS);
     }
     bytes_transferred += 8;
@@ -2084,14 +2078,12 @@ static int ram_save_iterate(QEMUFile *f, void *opaque)
         return ret;
     }
 
-    printlog(true, "ram_save_iterate out: blob_pos(%d), tell(%d)\n", get_blob_pos(f), qemu_ftell_read(f));
     return pages_sent;
 }
 
 /* Called with iothread lock */
 static int ram_save_complete(QEMUFile *f, void *opaque)
 {
-    printlog(true, "ram_save_complete in: blob_pos(%d), tell(%d)\n", get_blob_pos(f), qemu_ftell_read(f));
     rcu_read_lock();
 
     if (!migration_in_postcopy(migrate_get_current())) {
@@ -2119,10 +2111,8 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
     rcu_read_unlock();
 
     reset_blob_pos(f);
-    printlog(true, "header_ram_save_complete RAM_SAVE_FLAG_EOS\n");
     qemu_put_be64(f, RAM_SAVE_FLAG_EOS);
 
-    printlog(true, "ram_save_complete out: blob_pos(%d), tell(%d)\n", get_blob_pos(f), qemu_ftell_read(f));
     return 0;
 }
 
@@ -2465,7 +2455,6 @@ QEMUFile *qemu_memfile = NULL;
 
 static inline void *mmap_ram_block(QEMUFile *f, void* host, RAMBlock *block)
 {
-    printlog(true, "mmap_ram_block in\n");
     int fd;
     off_t offset;
     void *addr;
@@ -2477,23 +2466,18 @@ static inline void *mmap_ram_block(QEMUFile *f, void* host, RAMBlock *block)
 
     fd = qemu_get_fd(f);
     offset = (off_t) qemu_ftell_read(f);
-    printlog(true, "mmap_ram_block offset: %d, fd: %d, length: %d\n", offset, fd, block->used_length);
 
     // TODO: if possible avoid mallocing when registering pc ram, as
     //       that region will be overwritten by this
     addr = mmap(host, (size_t)block->used_length,
             PROT_EXEC | PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_FIXED, fd, offset);
-    printlog(true, "mmap_ram_block before seek: %d %d\n", qemu_ftell_read(f), qemu_ftell(f));
     qemu_fseek(f, block->used_length, SEEK_CUR);
-    printlog(true, "mmap_ram_block after seek: %d %d\n", qemu_ftell_read(f), qemu_ftell(f));
 
     if (((long) addr) == -1) {
         perror("qemu_mmap_mem");
-        printlog(true, "mmap_ram_block error\n");
         return NULL;
     }
-    printlog(true, "mmap_ram_block out\n");
 
     return addr;
 }
@@ -2545,24 +2529,19 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     }
 
     while (!postcopy_running && !ret && !(flags & RAM_SAVE_FLAG_EOS)) {
-        printlog(true, "ram_load 1: %d, %d\n", qemu_ftell(f), qemu_ftell_read(f));
         ram_addr_t addr, total_ram_bytes;
         void *host = NULL;
         uint8_t ch;
         size_t padding;
 
-        printlog(true, "ram_load 2: %d, %d\n", qemu_ftell(f), qemu_ftell_read(f));
         addr = qemu_get_be64(f);
         flags = addr & ~TARGET_PAGE_MASK;
         addr &= TARGET_PAGE_MASK;
-        printlog(true, "ram_load 3: %d, %d\n", qemu_ftell(f), qemu_ftell_read(f));
-        printlog(true, "ram_load 3: addr (%d), flag(%d)\n", addr, flags);
 
         if (flags & (RAM_SAVE_FLAG_COMPRESS | RAM_SAVE_FLAG_PAGE |
                      RAM_SAVE_FLAG_RAW |
                      RAM_SAVE_FLAG_COMPRESS_PAGE | RAM_SAVE_FLAG_XBZRLE)) {
             host = host_from_stream_offset(f, addr, flags, (char *)&cur_id);
-            printlog(true, "ram_load 4: %d, %d\n", qemu_ftell(f), qemu_ftell_read(f));
             if (!host) {
                 error_report("Illegal RAM offset " RAM_ADDR_FMT, addr);
                 ret = -EINVAL;
@@ -2570,11 +2549,9 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
             }
         }
 
-        printlog(true, "ram_load 5: %d, %d, %d\n", flags & ~RAM_SAVE_FLAG_CONTINUE, qemu_ftell(f), qemu_ftell_read(f));
         RAMBlock *cur_block;
         switch (flags & ~RAM_SAVE_FLAG_CONTINUE) {
         case RAM_SAVE_FLAG_MEM_SIZE:
-            printlog(true, "RAM_SAVE_FLAG_MEM_SIZE\n");
             /* Synchronize RAM block list */
             total_ram_bytes = addr;
             while (!ret && total_ram_bytes) {
@@ -2611,18 +2588,15 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
             break;
 
         case RAM_SAVE_FLAG_COMPRESS:
-            printlog(true, "RAM_SAVE_FLAG_COMPRESS\n");
             ch = qemu_get_byte(f);
             ram_handle_compressed(host, ch, TARGET_PAGE_SIZE);
             break;
 
         case RAM_SAVE_FLAG_PAGE:
-            printlog(true, "RAM_SAVE_FLAG_PAGE\n");
             qemu_get_buffer(f, host, TARGET_PAGE_SIZE);
             break;
 
         case RAM_SAVE_FLAG_COMPRESS_PAGE:
-            printlog(true, "RAM_SAVE_FLAG_COMPRESS_PAGE\n");
             len = qemu_get_be32(f);
             if (len < 0 || len > compressBound(TARGET_PAGE_SIZE)) {
                 error_report("Invalid compressed data length: %d", len);
@@ -2634,7 +2608,6 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
             break;
 
         case RAM_SAVE_FLAG_XBZRLE:
-            printlog(true, "RAM_SAVE_FLAG_XBZRLE\n");
             if (load_xbzrle(f, addr, host) < 0) {
                 error_report("Failed to decompress XBZRLE page at "
                              RAM_ADDR_FMT, addr);
@@ -2644,24 +2617,21 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
             break;
 
         case RAM_SAVE_FLAG_EOS:
-            printlog(true, "RAM_SAVE_FLAG_EOS\n");
             /* normal exit */
             break;
 
         case RAM_SAVE_FLAG_RAW:
-            printlog(true, "RAM_SAVE_FLAG_RAW\n");
             cur_block = qemu_ram_block_by_name(cur_id);
             padding = qemu_ftell_read(f) & (TARGET_PAGE_SIZE - 1);
             padding = TARGET_PAGE_SIZE - padding;
-            printlog(true, "loading loc: %s, %d, length: %d, read %d from %d\n", cur_id, qemu_ftell_read(f), padding, cur_block->used_length, qemu_ftell_read(f)+padding);
 
             qemu_get_buffer(f, (unsigned char *)&padding_buf, padding);
-            qemu_get_buffer(f, host, cur_block->used_length);
-            //if (cur_block) {
-            //    mmap_ram_block(f, host, cur_block);
-            //} else {
-            //    return -EINVAL;
-            //}
+            //qemu_get_buffer(f, host, cur_block->used_length);
+            if (cur_block) {
+                mmap_ram_block(f, host, cur_block);
+            } else {
+                return -EINVAL;
+            }
 
             break;
 
@@ -2703,54 +2673,42 @@ void ram_mig_init(void)
 
 void raw_live_stop(QEMUFile *f)
 {
-    //printlog(true, "raw_live_stop before\n");
     qemu_mutex_lock(&f->raw_live_state_lock);
     f->raw_live_stop_requested = true;
     if (!f->raw_live_iterate_requested) {
 	f->raw_live_iterate_requested = true;
-        //printlog(true, "raw_live_stop broadcast to raw_live_state_cv\n");
 	qemu_cond_broadcast(&f->raw_live_state_cv);
     }
     qemu_mutex_unlock(&f->raw_live_state_lock);
-    //printlog(true, "raw_live_stop after\n");
 }
 
 void raw_live_iterate(QEMUFile *f)
 {
     qemu_mutex_lock(&f->raw_live_state_lock);
-    //printlog(true, "raw_live_iterate before\n");
     if (!f->raw_live_iterate_requested) {
 	f->raw_live_iterate_requested = true;
-        //printlog(true, "raw_live_iterate cond_broadcast\n");
 	qemu_cond_broadcast(&f->raw_live_state_cv);
     }
     qemu_mutex_unlock(&f->raw_live_state_lock);
-    //printlog(true, "raw_live_iterate after\n");
 }
 
 void check_wait_raw_live_iterate(QEMUFile *f)
 {
-    printlog(true, "check_wait_raw_live_iterate before\n");
     qemu_mutex_lock(&f->raw_live_state_lock);
     if (f->raw_live_iterate_requested) {
-        printlog(true, "check_wait_raw_live_iterate true -> false\n");
         f->raw_live_iterate_requested = false;
     } else {
         for ( ; ; ) {
-            printlog(true, "check_wait_raw_live_iterate cond wait\n");
             qemu_cond_wait(&f->raw_live_state_cv,
         		   &f->raw_live_state_lock);
 
-            printlog(true, "check_wait_raw_live_iterate cond wait pass\n");
             if (f->raw_live_iterate_requested) {
         	f->raw_live_iterate_requested = false;
         	break;
             }
         }
     }
-    printlog(true, "check_wait_raw_live_iterate finish waiting\n");
     qemu_mutex_unlock(&f->raw_live_state_lock);
-    printlog(true, "check_wait_raw_live_iterate after\n");
 }
 
 bool check_raw_live_stop(QEMUFile *f)
@@ -2806,7 +2764,6 @@ void raw_live_randomize(void)
 
 void reset_blob_pos(QEMUFile *f)
 {
-    printlog(true, "reset_blob_pos old: %d, new: %d\n", get_blob_pos(f), last_blob_pos);
     set_blob_pos(f, last_blob_pos);
 }
 
@@ -2835,48 +2792,48 @@ bool check_raw_live_random(void)
 /* Estimates the number of page-sized blobs generated by raw methods */
 uint64_t raw_ram_total_pages(uint64_t total_device_size)
 {
-	RAMBlock *block;
-	uint64_t num_pages = 0, num_bytes = 0;
-	bool first = true;
+    RAMBlock *block;
+    uint64_t num_pages = 0, num_bytes = 0;
+    bool first = true;
 
-	num_bytes += (4 + 4); // QEMU_VM_FILE_MAGIC + QEMU_VM_FILE_VERSION
-	num_bytes += 1; // QEMU_VM_SECTION_FULL
-	num_bytes += 4; // se->section_id
-	num_bytes += (1 + strlen("ram") + 4 + 4); // se->idstr, se->instance_id, se->version_id
+    num_bytes += (4 + 4); // QEMU_VM_FILE_MAGIC + QEMU_VM_FILE_VERSION
+    num_bytes += 1; // QEMU_VM_SECTION_FULL
+    num_bytes += 4; // se->section_id
+    num_bytes += (1 + strlen("ram") + 4 + 4); // se->idstr, se->instance_id, se->version_id
 
-	num_bytes += 8;  // RAM_SAVE_FLAG_MEM_SIZE
+    num_bytes += 8;  // RAM_SAVE_FLAG_MEM_SIZE
 
-	QLIST_FOREACH(block, &ram_list.blocks, next)
-		num_bytes += (1 + strlen(block->idstr) + 8);  // block->idstr
+    QLIST_FOREACH(block, &ram_list.blocks, next)
+        num_bytes += (1 + strlen(block->idstr) + 8);  // block->idstr
 
-	QLIST_FOREACH(block, &ram_list.blocks, next) {
-		if (first) {
-			num_bytes += (8 + 1 + strlen(block->idstr));  // RAM_SAVE_FLAG_RAW, block->idstr
-			num_pages += (num_bytes / TARGET_PAGE_SIZE);
-			if (num_bytes % TARGET_PAGE_SIZE)
-				num_pages++;  // account for padding
-			first = false;
-		} else {
-			// account for padding for writing RAM_SAVE_FLAG_RAW and block->idstr
-			// and then padding
-			num_pages++;
-		}
+    QLIST_FOREACH(block, &ram_list.blocks, next) {
+        if (first) {
+            num_bytes += (8 + 1 + strlen(block->idstr));  // RAM_SAVE_FLAG_RAW, block->idstr
+            num_pages += (num_bytes / TARGET_PAGE_SIZE);
+            if (num_bytes % TARGET_PAGE_SIZE)
+                num_pages++;  // account for padding
+            first = false;
+        } else {
+            // account for padding for writing RAM_SAVE_FLAG_RAW and block->idstr
+            // and then padding
+            num_pages++;
+        }
 
-		num_pages += (block->used_length / TARGET_PAGE_SIZE);
-	}
+        num_pages += (block->used_length / TARGET_PAGE_SIZE);
+    }
 
-	// at this point, written size is page-size aligned, so start counting bytes anew
-	num_bytes = 8; // RAM_SAVE_FLAG_EOS
-	num_bytes += total_device_size;
-	// account for fluctuations in total device state size
-	// due to cpu state size changes
-	num_bytes += TOTAL_DEVICE_SIZE_SLACK;
+    // at this point, written size is page-size aligned, so start counting bytes anew
+    num_bytes = 8; // RAM_SAVE_FLAG_EOS
+    num_bytes += total_device_size;
+    // account for fluctuations in total device state size
+    // due to cpu state size changes
+    num_bytes += TOTAL_DEVICE_SIZE_SLACK;
 
-	num_pages += (num_bytes / TARGET_PAGE_SIZE);
-	if (num_bytes % TARGET_PAGE_SIZE)
-		num_pages++;
+    num_pages += (num_bytes / TARGET_PAGE_SIZE);
+    if (num_bytes % TARGET_PAGE_SIZE)
+        num_pages++;
 
-	return num_pages;
+    return num_pages;
 }
 
 #undef TOTAL_DEVICE_SIZE_SLACK

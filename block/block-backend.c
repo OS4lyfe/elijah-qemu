@@ -1173,7 +1173,6 @@ int blk_truncate(BlockBackend *blk, int64_t offset)
 
 int blk_discard(BlockBackend *blk, int64_t sector_num, int nb_sectors)
 {
-    printlog(true, "blk_discard\n");
     int ret = blk_check_request(blk, sector_num, nb_sectors);
     if (ret < 0) {
         return ret;

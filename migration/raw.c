@@ -19,7 +19,6 @@
 #include "monitor/monitor.h"
 #include "migration/qemu-file.h"
 #include "block/block.h"
-#include "cloudlet/qemu-cloudlet.h"
 #include "include/migration/migration.h"
 
 #define DEBUG_MIGRATION_RAW
@@ -35,7 +34,6 @@
 
 void raw_start_outgoing_migration(MigrationState *s, const char *fdname, raw_type type, Error **errp)
 {
-    printlog(true, "raw_migration: start migration at %s\n", fdname);
     // for already created file
     int fd = monitor_get_fd(cur_mon, fdname, errp);
     if (fd == -1) {
@@ -57,7 +55,6 @@ static void raw_accept_incoming_migration(void *opaque)
 {
     QEMUFile *f = opaque;
 
-    printlog(true, "raw_accept_incoming_migration\n");
     qemu_set_fd_handler(qemu_get_fd(f), NULL, NULL, NULL);
     process_incoming_migration(f);
 }
@@ -78,7 +75,6 @@ void raw_start_incoming_migration(const char *infd, raw_type type, Error **errp)
 
     f = qemu_fdopen(fd, "rb");
     if(f == NULL) {
-        printlog(true, "Unable to apply qemu wrapper to file descriptor\n");
         return;
     }
 
