@@ -2665,7 +2665,6 @@ static int sd_load_vmstate(BlockDriverState *bs, uint8_t *data,
 static coroutine_fn int sd_co_discard(BlockDriverState *bs, int64_t sector_num,
                                       int nb_sectors)
 {
-    printlog(true, "coroutine_fn\n");
     SheepdogAIOCB *acb;
     BDRVSheepdogState *s = bs->opaque;
     int ret;
